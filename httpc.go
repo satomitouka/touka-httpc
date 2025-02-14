@@ -107,6 +107,15 @@ func New(opts ...Option) *Client {
 	return c
 }
 
+// 新建请求，支持与http.NewRequest兼容
+func (c *Client) NewRequest(method, urlStr string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, urlStr, body)
+	if err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
 // Option 配置选项类型
 type Option func(*Client)
 
