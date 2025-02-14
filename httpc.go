@@ -27,6 +27,9 @@ const (
 	maxBufferPool = 100
 )
 
+// 默认User-Agent
+const defaultUserAgent = "Touka HTTP Client"
+
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return bytes.NewBuffer(make([]byte, 0, bufferSize))
@@ -39,6 +42,7 @@ type Client struct {
 	transport  *http.Transport
 	retryOpts  RetryOptions
 	bufferPool BufferPool
+	userAgent  string
 }
 
 // RetryOptions 重试配置
@@ -98,6 +102,7 @@ func New(opts ...Option) *Client {
 			RetryStatuses: []int{429, 500, 502, 503, 504},
 		},
 		bufferPool: &defaultPool{},
+		userAgent:  defaultUserAgent,
 	}
 
 	for _, opt := range opts {
@@ -107,12 +112,13 @@ func New(opts ...Option) *Client {
 	return c
 }
 
-// 新建请求，支持与http.NewRequest兼容
+// NewRequest 创建请求，支持与http.NewRequest兼容
 func (c *Client) NewRequest(method, urlStr string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequest(method, urlStr, body)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", c.userAgent) // 设置默认User-Agent
 	return req, nil
 }
 
@@ -141,11 +147,16 @@ func WithRetryOptions(opts RetryOptions) Option {
 	}
 }
 
+// WithUserAgent 设置自定义User-Agent
+func WithUserAgent(ua string) Option {
+	return func(c *Client) {
+		c.userAgent = ua
+	}
+}
+
 // 实现标准库兼容接口
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	// 检查是否为 HTTP/2 连接
 	if req.ProtoMajor == 2 {
-		// 删除 Connection Upgrade 头，避免与 HTTP/2 冲突
 		if req.Header.Get("Connection") == "Upgrade" && req.Header.Get("Upgrade") != "" {
 			req.Header.Del("Connection")
 			req.Header.Del("Upgrade")
@@ -307,6 +318,37 @@ func (c *Client) PostJSON(ctx context.Context, url string, body interface{}) (*h
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", c.userAgent) // 设置默认User-Agent
+
+	return c.Do(req)
+}
+
+// 高级PUT方法
+func (c *Client) PutJSON(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+	buf := c.bufferPool.Get()
+	defer c.bufferPool.Put(buf)
+
+	if err := json.NewEncoder(buf).Encode(body); err != nil {
+		return nil, fmt.Errorf("encode error: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "PUT", url, buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", c.userAgent) // 设置默认User-Agent
+
+	return c.Do(req)
+}
+
+// 高级DELETE方法
+func (c *Client) Delete(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.userAgent) // 设置默认User-Agent
 
 	return c.Do(req)
 }
