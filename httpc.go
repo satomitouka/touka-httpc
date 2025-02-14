@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -285,6 +286,32 @@ func (c *Client) DecodeJSON(resp *http.Response, v interface{}) error {
 	return json.Unmarshal(buf.Bytes(), v)
 }
 
+// XML响应处理（使用缓冲池）
+func (c *Client) DecodeXML(resp *http.Response, v interface{}) error {
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		buf := c.bufferPool.Get()
+		defer c.bufferPool.Put(buf)
+
+		_, err := c.bufferCopy(buf, resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read error body: %w", err)
+		}
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, buf.String())
+	}
+
+	buf := c.bufferPool.Get()
+	defer c.bufferPool.Put(buf)
+
+	_, err := c.bufferCopy(buf, resp.Body)
+	if err != nil {
+		return fmt.Errorf("%v", err)
+	}
+
+	return xml.Unmarshal(buf.Bytes(), v)
+}
+
 // 辅助函数
 func isNetworkError(err error) bool {
 	var netErr net.Error
@@ -318,6 +345,25 @@ func (c *Client) PostJSON(ctx context.Context, url string, body interface{}) (*h
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", c.userAgent) // 设置默认User-Agent
+
+	return c.Do(req)
+}
+
+// 高级POST方法支持XML
+func (c *Client) PostXML(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+	buf := c.bufferPool.Get()
+	defer c.bufferPool.Put(buf)
+
+	if err := xml.NewEncoder(buf).Encode(body); err != nil {
+		return nil, fmt.Errorf("encode error: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/xml")
 	req.Header.Set("User-Agent", c.userAgent) // 设置默认User-Agent
 
 	return c.Do(req)
