@@ -1,4 +1,4 @@
-package httpclient
+package httpc
 
 import (
 	"bytes"
@@ -76,20 +76,19 @@ func New(opts ...Option) *Client {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
+			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   runtime.GOMAXPROCS(0) * 2,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
 	c := &Client{
 		client: &http.Client{
 			Transport: transport,
-			Timeout:   15 * time.Second,
 		},
 		transport: transport,
 		retryOpts: RetryOptions{
