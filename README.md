@@ -1,3 +1,3 @@
 # touka-httpc
 
-go httpc
+go httpc package
