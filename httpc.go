@@ -143,6 +143,14 @@ func WithRetryOptions(opts RetryOptions) Option {
 
 // 实现标准库兼容接口
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
+	// 检查是否为 HTTP/2 连接
+	if req.ProtoMajor == 2 {
+		// 删除 Connection Upgrade 头，避免与 HTTP/2 冲突
+		if req.Header.Get("Connection") == "Upgrade" && req.Header.Get("Upgrade") != "" {
+			req.Header.Del("Connection")
+			req.Header.Del("Upgrade")
+		}
+	}
 	return c.doWithRetry(req)
 }
 
