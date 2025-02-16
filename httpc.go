@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -132,11 +133,48 @@ func (c *Client) NewRequest(method, urlStr string, body io.Reader) (*http.Reques
 // Option 配置选项类型
 type Option func(*Client)
 
-// WithTransport 自定义Transport
+// WithTransport 自定义Transport，将非零字段合并到默认Transport中
 func WithTransport(t *http.Transport) Option {
 	return func(c *Client) {
-		c.transport = t
-		c.client.Transport = t
+		defaultTransport := c.transport
+		mergeTransport(defaultTransport, t)
+		// 更新Client的Transport
+		c.transport = defaultTransport
+		c.client.Transport = defaultTransport
+	}
+}
+
+// mergeTransport 将src的非零字段合并到dst中
+func mergeTransport(dst, src *http.Transport) {
+	dstVal := reflect.ValueOf(dst).Elem()
+	srcVal := reflect.ValueOf(src).Elem()
+
+	for i := 0; i < srcVal.NumField(); i++ {
+		srcField := srcVal.Field(i)
+		srcType := srcVal.Type().Field(i)
+		// 跳过不可导出字段
+		if srcType.PkgPath != "" {
+			continue
+		}
+		dstField := dstVal.FieldByName(srcType.Name)
+		if !dstField.IsValid() || !dstField.CanSet() {
+			continue
+		}
+		// 检查src字段是否为零值，非零则复制
+		if !isZero(srcField) {
+			dstField.Set(srcField)
+		}
+	}
+}
+
+// isZero 检查反射值是否为对应类型的零值
+func isZero(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return v.IsNil()
+	default:
+		z := reflect.Zero(v.Type())
+		return v.Interface() == z.Interface()
 	}
 }
 
