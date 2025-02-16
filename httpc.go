@@ -91,8 +91,9 @@ func New(opts ...Option) *Client {
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   runtime.GOMAXPROCS(0) * 2,
+		MaxIdleConns:          runtime.GOMAXPROCS(0) * 16,
+		MaxIdleConnsPerHost:   runtime.GOMAXPROCS(0) * 4,
+		MaxConnsPerHost:       0,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -275,15 +276,21 @@ func getTransportDetails(transport http.RoundTripper) string {
 		return fmt.Sprintf(`  Type                 : *http.Transport
   MaxIdleConns         : %d
   MaxIdleConnsPerHost  : %d
+  MaxConnsPerHost      : %d
   IdleConnTimeout      : %s
   TLSHandshakeTimeout  : %s
   DisableKeepAlives    : %v
+  WriteBufferSize      : %d
+  ReadBufferSize       : %d
 `,
 			t.MaxIdleConns,
 			t.MaxIdleConnsPerHost,
+			t.MaxConnsPerHost,
 			t.IdleConnTimeout,
 			t.TLSHandshakeTimeout,
 			t.DisableKeepAlives,
+			t.WriteBufferSize,
+			t.ReadBufferSize,
 		)
 	}
 
