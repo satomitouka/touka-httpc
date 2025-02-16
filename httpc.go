@@ -194,14 +194,13 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 }
 
 // 记录请求日志
-// 记录请求日志
 func (c *Client) logRequest(req *http.Request) {
 	if c.dumpLog == nil {
 		return
 	}
 
-	// 提取 transport 信息
-	transport := fmt.Sprintf("%T", c.transport)
+	// 提取 Transport 详细信息
+	transportDetails := getTransportDetails(c.transport)
 
 	// 构造美观的日志内容
 	logContent := fmt.Sprintf(`
@@ -212,7 +211,8 @@ Method     : %s
 URL        : %s
 Host       : %s
 Protocol   : %s
-Transport  : %s
+Transport  : 
+%v
 Headers    :
 %v
 -------------------------------
@@ -222,12 +222,40 @@ Headers    :
 		req.URL.String(),                         // 请求完整 URL
 		req.URL.Host,                             // 请求主机
 		req.Proto,                                // 请求协议版本
-		transport,                                // Transport 类型
+		transportDetails,                         // Transport 详细信息
 		formatHeaders(req.Header),                // 格式化后的请求头
 	)
 
 	// 调用日志记录函数
 	c.dumpLog(req.Context(), logContent)
+}
+
+// 获取 Transport 的详细信息
+func getTransportDetails(transport http.RoundTripper) string {
+	// 检查是否为标准的 *http.Transport 类型
+	if t, ok := transport.(*http.Transport); ok {
+		return fmt.Sprintf(`  Type                 : *http.Transport
+  MaxIdleConns         : %d
+  MaxIdleConnsPerHost  : %d
+  IdleConnTimeout      : %s
+  TLSHandshakeTimeout  : %s
+  DisableKeepAlives    : %v
+`,
+			t.MaxIdleConns,
+			t.MaxIdleConnsPerHost,
+			t.IdleConnTimeout,
+			t.TLSHandshakeTimeout,
+			t.DisableKeepAlives,
+		)
+	}
+
+	// 如果是其他类型的 Transport，返回类型名称
+	if transport != nil {
+		return fmt.Sprintf("  Type                 : %T", transport)
+	}
+
+	// 如果 Transport 为空
+	return "  Type                 : nil"
 }
 
 // 格式化请求头为多行字符串
