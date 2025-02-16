@@ -85,14 +85,23 @@ func (p *defaultPool) Put(buf *bytes.Buffer) {
 
 // New 创建客户端实例
 func New(opts ...Option) *Client {
+	// 智能MaxIdleConns 设置
+	var maxIdleConns int = 0
+	if runtime.GOMAXPROCS(0) > 4 {
+		maxIdleConns = 128
+	} else if runtime.GOMAXPROCS(0) != 1 {
+		maxIdleConns = runtime.GOMAXPROCS(0) * 24
+	} else {
+		maxIdleConns = 32
+	}
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:          runtime.GOMAXPROCS(0) * 16,
-		MaxIdleConnsPerHost:   runtime.GOMAXPROCS(0) * 4,
+		MaxIdleConns:          maxIdleConns,
+		MaxIdleConnsPerHost:   maxIdleConns / 2,
 		MaxConnsPerHost:       0,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -343,7 +352,6 @@ func (c *Client) bufferCopy(dst io.Writer, src io.Reader) (written int64, err er
 	return
 }
 
-// 带指数退避的重试逻辑
 func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 	var (
 		resp *http.Response
@@ -352,9 +360,17 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 
 	for attempt := 0; attempt <= c.retryOpts.MaxAttempts; attempt++ {
 		resp, err = c.client.Do(req)
+
+		// 检查是否需要重试
 		if c.shouldRetry(resp, err) {
 			if attempt < c.retryOpts.MaxAttempts {
-				delay := c.calculateDelay(attempt)
+				// 仅在 429 时解析 Retry-After，其他情况使用指数退避
+				var delay time.Duration
+				if resp != nil && resp.StatusCode == 429 {
+					delay = c.calculateRetryAfter(resp)
+				} else {
+					delay = c.calculateExponentialBackoff(attempt)
+				}
 				time.Sleep(delay)
 				continue
 			}
@@ -368,6 +384,47 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+// 解析 Retry-After 头部，仅在状态码为 429 时调用
+func (c *Client) calculateRetryAfter(resp *http.Response) time.Duration {
+	retryAfter := resp.Header.Get("Retry-After")
+	if retryAfter != "" {
+		// 尝试解析 Retry-After
+		if delay, err := parseRetryAfter(retryAfter); err == nil {
+			return delay
+		}
+	}
+
+	// 如果 Retry-After 不存在或无效，返回默认的最小延迟时间
+	return c.retryOpts.BaseDelay
+}
+
+// 解析 Retry-After 的具体实现
+func parseRetryAfter(retryAfter string) (time.Duration, error) {
+	// 尝试解析为秒数
+	if seconds, err := time.ParseDuration(retryAfter + "s"); err == nil {
+		return seconds, nil
+	}
+
+	// 尝试解析为 HTTP 日期
+	if retryTime, err := http.ParseTime(retryAfter); err == nil {
+		delay := time.Until(retryTime)
+		if delay > 0 {
+			return delay, nil
+		}
+	}
+
+	return 0, errors.New("invalid Retry-After value")
+}
+
+// 指数退避计算
+func (c *Client) calculateExponentialBackoff(attempt int) time.Duration {
+	delay := c.retryOpts.BaseDelay * time.Duration(1<<uint(attempt))
+	if delay > c.retryOpts.MaxDelay {
+		return c.retryOpts.MaxDelay
+	}
+	return delay
 }
 
 // 错误包装
@@ -389,6 +446,7 @@ func (c *Client) shouldRetry(resp *http.Response, err error) bool {
 		return isNetworkError(err)
 	}
 
+	// 检查是否需要重试的状态码
 	for _, status := range c.retryOpts.RetryStatuses {
 		if resp.StatusCode == status {
 			return true
@@ -397,6 +455,7 @@ func (c *Client) shouldRetry(resp *http.Response, err error) bool {
 	return false
 }
 
+/*
 // 指数退避计算
 func (c *Client) calculateDelay(attempt int) time.Duration {
 	delay := c.retryOpts.BaseDelay * time.Duration(1<<uint(attempt))
@@ -405,6 +464,7 @@ func (c *Client) calculateDelay(attempt int) time.Duration {
 	}
 	return delay
 }
+*/
 
 // JSON响应处理（使用缓冲池）
 func (c *Client) DecodeJSON(resp *http.Response, v interface{}) error {
