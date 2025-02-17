@@ -39,6 +39,8 @@ const (
 	defaultExpectContinueTimeout = 1 * time.Second
 )
 
+var enableH2C = false // 是否启用 HTTP/2 Cleartext 连接
+
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
@@ -259,6 +261,13 @@ func WithMiddleware(middleware ...MiddlewareFunc) Option {
 	}
 }
 
+// WithH2C 启用自定义 H2C (HTTP/2 Cleartext) 支持
+func WithH2C() Option {
+	return func(c *Client) {
+		enableH2C = true // 设置全局变量启用 H2C
+	}
+}
+
 // New 创建客户端实例
 func New(opts ...Option) *Client {
 	// 智能MaxIdleConns 设置 (保持不变)
@@ -277,6 +286,13 @@ func New(opts ...Option) *Client {
 		KeepAlive: defaultKeepAliveTimeout,
 	}
 
+	var proTolcols = new(http.Protocols)
+	proTolcols.SetHTTP1(true)
+	proTolcols.SetHTTP2(true)
+	if enableH2C {
+		proTolcols.SetUnencryptedHTTP2(true)
+	}
+
 	// 默认 Transport 配置
 	transport := &http.Transport{
 		Proxy:                  http.ProxyFromEnvironment,
@@ -293,6 +309,7 @@ func New(opts ...Option) *Client {
 		DisableCompression:     false,
 		MaxResponseHeaderBytes: 0, // 默认为 0，表示无限制
 		ForceAttemptHTTP2:      false,
+		Protocols:              proTolcols,
 	}
 
 	c := &Client{
