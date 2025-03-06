@@ -1017,8 +1017,18 @@ func (c *Client) decodeGOBResponse(resp *http.Response, v interface{}) error {
 	}
 
 	// 使用 gob 解码
-	if err := gob.NewDecoder(resp.Body).Decode(v); err != nil {
+	buf := c.bufferPool.Get()
+	defer c.bufferPool.Put(buf)
+
+	_, err := c.bufferCopy(buf, resp.Body)
+	if err != nil {
 		return fmt.Errorf("%w: %v", ErrDecodeResponse, err)
+	}
+	if err := gob.NewDecoder(buf).Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("%w: unexpected end of data: %v", ErrDecodeResponse, err)
+		}
+		return fmt.Errorf("%w: %v, raw body: %s", ErrDecodeResponse, err, buf.String()) // 包含原始 body
 	}
 	return nil
 }
