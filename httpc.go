@@ -3,6 +3,7 @@ package httpc
 import (
 	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -498,6 +499,20 @@ func (rb *RequestBuilder) SetXMLBody(body interface{}) (*RequestBuilder, error) 
 	return rb, nil
 }
 
+// SetGOBBody 设置GOB Body
+func (rb *RequestBuilder) SetGOBBody(body interface{}) (*RequestBuilder, error) {
+	buf := rb.client.bufferPool.Get()
+	defer rb.client.bufferPool.Put(buf)
+
+	// 使用 gob 编码
+	if err := gob.NewEncoder(buf).Encode(body); err != nil {
+		return nil, fmt.Errorf("encode gob body error: %w", err)
+	}
+	rb.body = buf
+	rb.header.Set("Content-Type", "application/octet-stream") // 设置合适的 Content-Type
+	return rb, nil
+}
+
 // Build 构建 http.Request
 func (rb *RequestBuilder) Build() (*http.Request, error) {
 	// 构建带 Query 参数的 URL
@@ -925,6 +940,16 @@ func (rb *RequestBuilder) DecodeXML(v interface{}) error {
 	return rb.client.decodeXMLResponse(resp, v)
 }
 
+// DecodeGOB 解析 GOB 响应
+func (rb *RequestBuilder) DecodeGOB(v interface{}) error {
+	resp, err := rb.Execute()
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return rb.client.decodeGOBResponse(resp, v)
+}
+
 // Text 获取 Text 响应
 func (rb *RequestBuilder) Text() (string, error) {
 	resp, err := rb.Execute()
@@ -981,6 +1006,19 @@ func (c *Client) decodeXMLResponse(resp *http.Response, v interface{}) error {
 
 	if err := xml.Unmarshal(buf.Bytes(), v); err != nil {
 		return fmt.Errorf("%w: %v, raw body: %s", ErrDecodeResponse, err, buf.String()) // 包含原始 body
+	}
+	return nil
+}
+
+// decodeGOBResponse 内部 GOB 响应解码
+func (c *Client) decodeGOBResponse(resp *http.Response, v interface{}) error {
+	if resp.StatusCode >= 400 {
+		return c.errorResponse(resp)
+	}
+
+	// 使用 gob 解码
+	if err := gob.NewDecoder(resp.Body).Decode(v); err != nil {
+		return fmt.Errorf("%w: %v", ErrDecodeResponse, err)
 	}
 	return nil
 }
@@ -1065,6 +1103,16 @@ func (c *Client) PostXML(ctx context.Context, url string, body interface{}) (*ht
 	return builder.WithContext(ctx).Execute()
 }
 
+// PostGOB 发送 GOB POST 请求
+func (c *Client) PostGOB(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+	builder := c.POST(url)
+	_, err := builder.SetGOBBody(body)
+	if err != nil {
+		return nil, err
+	}
+	return builder.WithContext(ctx).Execute()
+}
+
 // PutJSON 发送 JSON PUT 请求
 func (c *Client) PutJSON(ctx context.Context, url string, body interface{}) (*http.Response, error) {
 	builder := c.PUT(url)
@@ -1073,6 +1121,36 @@ func (c *Client) PutJSON(ctx context.Context, url string, body interface{}) (*ht
 		return nil, err
 	}
 	return builder.WithContext(ctx).Execute()
+}
+
+// PutXML 发送 XML PUT 请求
+func (c *Client) PutXML(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+	builder := c.PUT(url)
+	_, err := builder.SetXMLBody(body)
+	if err != nil {
+		return nil, err
+	}
+	return builder.WithContext(ctx).Execute()
+}
+
+// PutGOB 发送 GOB PUT 请求
+func (c *Client) PutGOB(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+	builder := c.PUT(url)
+	_, err := builder.SetGOBBody(body)
+	if err != nil {
+		return nil, err
+	}
+	return builder.WithContext(ctx).Execute()
+}
+
+// Post 发送 POST 请求
+func (c *Client) Post(ctx context.Context, url string, body io.Reader) (*http.Response, error) {
+	return c.POST(url).SetBody(body).WithContext(ctx).Execute()
+}
+
+// Put 发送 PUT 请求
+func (c *Client) Put(ctx context.Context, url string, body io.Reader) (*http.Response, error) {
+	return c.PUT(url).SetBody(body).WithContext(ctx).Execute()
 }
 
 // Delete 发送 DELETE 请求
