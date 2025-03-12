@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/WJQSERVER-STUDIO/go-utils/copyb"
 )
 
 // 错误定义
@@ -593,7 +595,7 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	w.WriteHeader(resp.StatusCode)
 
 	// 复制 Body
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	if _, err := copyb.CopyBuffer(w, resp.Body, nil); err != nil {
 		// 复制 Body 失败，记录日志或处理错误
 		fmt.Printf("Error copying response body: %v\n", err) // 示例错误处理
 	}
@@ -771,7 +773,7 @@ func getTransportDetails(transport http.RoundTripper) string {
 	return "  Type                 : nil"
 }
 
-// 格式化请求头为多行字符串 (保持原函数不变)
+// 格式化请求头为多行字符串
 func formatHeaders(headers http.Header) string {
 	var builder strings.Builder
 	for key, values := range headers {
@@ -780,7 +782,8 @@ func formatHeaders(headers http.Header) string {
 	return builder.String()
 }
 
-// 高性能 BufferCopy 实现 (保持原函数不变)
+/*
+// 高性能 BufferCopy 实现
 func (c *Client) bufferCopy(dst io.Writer, src io.Reader) (written int64, err error) {
 	buf := c.bufferPool.Get()
 	defer c.bufferPool.Put(buf)
@@ -808,6 +811,12 @@ func (c *Client) bufferCopy(dst io.Writer, src io.Reader) (written int64, err er
 			break
 		}
 	}
+	return
+}
+*/
+// 高性能 BufferCopy 实现
+func (c *Client) bufferCopy(dst io.Writer, src io.Reader) (written int64, err error) {
+	written, err = copyb.CopyBuffer(dst, src, nil)
 	return
 }
 

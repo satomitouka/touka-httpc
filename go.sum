@@ -1,0 +1,4 @@
+github.com/WJQSERVER-STUDIO/go-utils/copyb v0.0.3 h1:S1tFRwMZkrAswOJxF1X2yTvL6Tz+6IeOBuqmycDnydw=
+github.com/WJQSERVER-STUDIO/go-utils/copyb v0.0.3/go.mod h1:FZ6XE+4TKy4MOfX1xWKe6Rwsg0ucYFCdNh1KLvyKTfc=
+github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
+github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
