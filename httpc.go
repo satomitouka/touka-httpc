@@ -43,9 +43,6 @@ const (
 	defaultExpectContinueTimeout = 1 * time.Second
 )
 
-var enableH2C = false // 是否启用 HTTP/2 Cleartext 连接
-var forceH2C = false  // 是否强制启用 HTTP/2 Cleartext 连接
-
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
@@ -270,18 +267,53 @@ func WithMiddleware(middleware ...MiddlewareFunc) Option {
 	}
 }
 
-// WithH2C 启用自定义 H2C (HTTP/2 Cleartext) 支持
+// WithH2C ... (功能调整)
 func WithH2C() Option {
 	return func(c *Client) {
-		enableH2C = true // 设置全局变量启用 H2C
+		if !isProtocolGlobalySet() { // 只有当全局协议未设置时，Option 才生效
+			enableH2C = true // 设置全局变量启用 H2C
+		}
 	}
 }
 
-// WithH2C 启用自定义 H2C (HTTP/2 Cleartext) 支持
+// WithForceH2C ... (功能调整)
 func WithForceH2C() Option {
 	return func(c *Client) {
-		forceH2C = true // 设置全局变量启用 H2C
+		if !isProtocolGlobalySet() { // 只有当全局协议未设置时，Option 才生效
+			forceH2C = true // 设置全局变量启用 ForceH2C
+		}
 	}
+}
+
+// isProtocolGlobalySet 检查是否通过 SetProtolcols 全局设置了协议
+func isProtocolGlobalySet() bool {
+	if enableH1 || enableH2 || enableH2C || forceH2C {
+		return true
+	}
+	return false
+}
+
+// ProtocolsConfig 协议版本配置结构体
+type ProtocolsConfig struct {
+	Http1           bool // 是否启用 HTTP/1.1
+	Http2           bool // 是否启用 HTTP/2
+	Http2_Cleartext bool // 是否启用 H2C
+	ForceH2C        bool // 是否强制启用 H2C
+}
+
+var (
+	enableH1  bool
+	enableH2  bool
+	enableH2C bool
+	forceH2C  bool
+)
+
+// SetProtolcols 预先配置全局协议版本设置 (使用结构体参数)
+func SetProtolcols(config ProtocolsConfig) {
+	enableH1 = config.Http1
+	enableH2 = config.Http2
+	enableH2C = config.Http2_Cleartext
+	forceH2C = config.ForceH2C
 }
 
 // New 创建客户端实例
@@ -323,21 +355,15 @@ func New(opts ...Option) *Client {
 		middlewares:   []MiddlewareFunc{},
 	}
 
-	for _, opt := range opts {
-		opt(c)
-		// 应用 Option 后，需要重新设置 Transport 到 Client，确保配置生效
-		c.client.Transport = c.transport
-		if c.timeout != 0 { // 如果设置了全局超时，则更新 Client 的 Timeout
-			c.client.Timeout = c.timeout
+	if isProtocolGlobalySet() {
+		proTolcols.SetHTTP1(enableH1)
+		proTolcols.SetHTTP2(enableH2)
+		proTolcols.SetUnencryptedHTTP2(enableH2C)
+		if forceH2C {
+			proTolcols.SetHTTP1(false)
+			proTolcols.SetHTTP2(false)
+			proTolcols.SetUnencryptedHTTP2(true)
 		}
-	}
-
-	if enableH2C {
-		proTolcols.SetUnencryptedHTTP2(true)
-	} else if forceH2C {
-		proTolcols.SetHTTP1(false)
-		proTolcols.SetHTTP2(false)
-		proTolcols.SetUnencryptedHTTP2(true)
 	}
 
 	// 默认 Transport 配置
@@ -363,6 +389,15 @@ func New(opts ...Option) *Client {
 	c.client.Transport = transport
 	if c.timeout != 0 { // 如果设置了全局超时，则更新 Client 的 Timeout
 		c.client.Timeout = c.timeout
+	}
+
+	for _, opt := range opts {
+		opt(c)
+		// 应用 Option 后，需要重新设置 Transport 到 Client，确保配置生效
+		c.client.Transport = c.transport
+		if c.timeout != 0 { // 如果设置了全局超时，则更新 Client 的 Timeout
+			c.client.Timeout = c.timeout
+		}
 	}
 
 	return c
@@ -621,13 +656,13 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	// 复制 Body
 	if _, err := copyb.Copy(w, resp.Body); err != nil {
 		// 复制 Body 失败，记录日志或处理错误
-		fmt.Printf("Error copying response body: %v\n", err) // 示例错误处理
+		fmt.Printf("Error copying response body: %v\n", err)
 	}
 	/*
 		// 复制 Body
 		if _, err := bufferCopy(w, resp.Body); err != nil {
 			// 复制 Body 失败，记录日志或处理错误
-			fmt.Printf("Error copying response body: %v\n", err) // 示例错误处理
+			fmt.Printf("Error copying response body: %v\n", err)
 		}
 	*/
 }
