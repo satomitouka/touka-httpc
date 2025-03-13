@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/WJQSERVER-STUDIO/go-utils/copyb"
+	"github.com/valyala/bytebufferpool"
 )
 
 // 错误定义
@@ -43,12 +44,17 @@ const (
 )
 
 var enableH2C = false // 是否启用 HTTP/2 Cleartext 连接
+var forceH2C = false  // 是否强制启用 HTTP/2 Cleartext 连接
 
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
 	},
 }
+
+var errInvalidWrite = errors.New("invalid write result")
+var ErrShortWrite = errors.New("short write")
+var EOF = io.EOF
 
 // DumpLogFunc 定义日志记录函数
 type DumpLogFunc func(ctx context.Context, log string)
@@ -271,6 +277,13 @@ func WithH2C() Option {
 	}
 }
 
+// WithH2C 启用自定义 H2C (HTTP/2 Cleartext) 支持
+func WithForceH2C() Option {
+	return func(c *Client) {
+		forceH2C = true // 设置全局变量启用 H2C
+	}
+}
+
 // New 创建客户端实例
 func New(opts ...Option) *Client {
 	// 智能MaxIdleConns 设置 (保持不变)
@@ -292,35 +305,13 @@ func New(opts ...Option) *Client {
 	var proTolcols = new(http.Protocols)
 	proTolcols.SetHTTP1(true)
 	proTolcols.SetHTTP2(true)
-	if enableH2C {
-		proTolcols.SetUnencryptedHTTP2(true)
-	}
-
-	// 默认 Transport 配置
-	transport := &http.Transport{
-		Proxy:                  http.ProxyFromEnvironment,
-		DialContext:            dialer.DialContext,
-		MaxIdleConns:           maxIdleConns,
-		MaxIdleConnsPerHost:    maxIdleConns / 2,
-		MaxConnsPerHost:        0, // 默认为 0，表示无限制
-		IdleConnTimeout:        defaultIdleConnTimeout,
-		TLSHandshakeTimeout:    defaultTLSHandshakeTimeout,
-		ExpectContinueTimeout:  defaultExpectContinueTimeout,
-		WriteBufferSize:        32 * 1024, // 默认为 32KB
-		ReadBufferSize:         32 * 1024, // 默认为 32KB
-		DisableKeepAlives:      false,
-		DisableCompression:     false,
-		MaxResponseHeaderBytes: 0, // 默认为 0，表示无限制
-		ForceAttemptHTTP2:      false,
-		Protocols:              proTolcols,
-	}
 
 	c := &Client{
 		client: &http.Client{
-			Transport: transport,
-			Timeout:   0, // 默认 Client Timeout 为 0，表示不超时，由 Request Context 控制
+			//Transport: transport,
+			Timeout: 0, // 默认 Client Timeout 为 0，表示不超时，由 Request Context 控制
 		},
-		transport:     transport,
+		//transport:     transport,
 		retryOpts:     defaultRetryOptions(),
 		bufferPool:    newDefaultPool(defaultBufferSize),
 		userAgent:     defaultUserAgent,
@@ -339,6 +330,39 @@ func New(opts ...Option) *Client {
 		if c.timeout != 0 { // 如果设置了全局超时，则更新 Client 的 Timeout
 			c.client.Timeout = c.timeout
 		}
+	}
+
+	if enableH2C {
+		proTolcols.SetUnencryptedHTTP2(true)
+	} else if forceH2C {
+		proTolcols.SetHTTP1(false)
+		proTolcols.SetHTTP2(false)
+		proTolcols.SetUnencryptedHTTP2(true)
+	}
+
+	// 默认 Transport 配置
+	transport := &http.Transport{
+		Proxy:                  http.ProxyFromEnvironment,
+		DialContext:            dialer.DialContext,
+		MaxIdleConns:           maxIdleConns,
+		MaxIdleConnsPerHost:    maxIdleConns / 2,
+		MaxConnsPerHost:        0, // 默认为 0，表示无限制
+		IdleConnTimeout:        defaultIdleConnTimeout,
+		TLSHandshakeTimeout:    defaultTLSHandshakeTimeout,
+		ExpectContinueTimeout:  defaultExpectContinueTimeout,
+		WriteBufferSize:        32 * 1024, // 默认为 32KB
+		ReadBufferSize:         32 * 1024, // 默认为 32KB
+		DisableKeepAlives:      false,
+		DisableCompression:     false,
+		MaxResponseHeaderBytes: 0, // 默认为 0，表示无限制
+		ForceAttemptHTTP2:      true,
+		Protocols:              proTolcols,
+	}
+
+	c.transport = transport
+	c.client.Transport = transport
+	if c.timeout != 0 { // 如果设置了全局超时，则更新 Client 的 Timeout
+		c.client.Timeout = c.timeout
 	}
 
 	return c
@@ -595,10 +619,17 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	w.WriteHeader(resp.StatusCode)
 
 	// 复制 Body
-	if _, err := copyb.CopyBuffer(w, resp.Body, nil); err != nil {
+	if _, err := copyb.Copy(w, resp.Body); err != nil {
 		// 复制 Body 失败，记录日志或处理错误
 		fmt.Printf("Error copying response body: %v\n", err) // 示例错误处理
 	}
+	/*
+		// 复制 Body
+		if _, err := bufferCopy(w, resp.Body); err != nil {
+			// 复制 Body 失败，记录日志或处理错误
+			fmt.Printf("Error copying response body: %v\n", err) // 示例错误处理
+		}
+	*/
 }
 
 // ResponseWriter 包装 http.ResponseWriter 和错误信息
@@ -754,6 +785,8 @@ func getTransportDetails(transport http.RoundTripper) string {
   DisableKeepAlives    : %v
   WriteBufferSize      : %d
   ReadBufferSize       : %d
+  Protocol             : %v
+  H2C                  : %v
 `,
 			t.MaxIdleConns,
 			t.MaxIdleConnsPerHost,
@@ -763,6 +796,8 @@ func getTransportDetails(transport http.RoundTripper) string {
 			t.DisableKeepAlives,
 			t.WriteBufferSize,
 			t.ReadBufferSize,
+			t.Protocols,
+			enableH2C,
 		)
 	}
 
@@ -773,7 +808,7 @@ func getTransportDetails(transport http.RoundTripper) string {
 	return "  Type                 : nil"
 }
 
-// 格式化请求头为多行字符串
+// 格式化请求头为多行字符串 (保持原函数不变)
 func formatHeaders(headers http.Header) string {
 	var builder strings.Builder
 	for key, values := range headers {
@@ -782,42 +817,95 @@ func formatHeaders(headers http.Header) string {
 	return builder.String()
 }
 
-/*
-// 高性能 BufferCopy 实现
 func (c *Client) bufferCopy(dst io.Writer, src io.Reader) (written int64, err error) {
-	buf := c.bufferPool.Get()
-	defer c.bufferPool.Put(buf)
+	var bufWrapper *bytebufferpool.ByteBuffer // 声明 ByteBuffer 包装器
+	var buf []byte
+
+	if c.bufferSize <= 0 {
+		c.bufferSize = 32 * 1024 // 默认缓冲区大小，如果未配置
+	}
+
+	bufWrapper = bytebufferpool.Get()    // 从池中获取 ByteBuffer
+	defer bytebufferpool.Put(bufWrapper) // 函数结束时将 ByteBuffer 放回池中
+	buf = bufWrapper.B                   // 使用底层的字节切片
+	if cap(buf) < c.bufferSize {         // 确保容量足够
+		buf = make([]byte, c.bufferSize) // 如果池中的缓冲区太小，则回退到 make 创建
+	} else {
+		buf = buf[:c.bufferSize] // 如果池中的缓冲区更大，则限制为配置的 bufferSize
+	}
 
 	for {
-		nr, er := src.Read(buf.Bytes()[:c.bufferSize]) // 使用配置的 bufferSize
+		nr, er := src.Read(buf)
 		if nr > 0 {
-			nw, ew := dst.Write(buf.Bytes()[0:nr])
-			if nw > 0 {
-				written += int64(nw)
+			nw, ew := dst.Write(buf[0:nr])
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = errInvalidWrite
+				}
 			}
+			written += int64(nw)
 			if ew != nil {
 				err = ew
 				break
 			}
 			if nr != nw {
-				err = io.ErrShortWrite
+				err = ErrShortWrite
 				break
 			}
 		}
 		if er != nil {
-			if er != io.EOF {
+			if er != EOF {
 				err = er
 			}
 			break
 		}
 	}
-	return
+	return written, err
 }
-*/
-// 高性能 BufferCopy 实现
-func (c *Client) bufferCopy(dst io.Writer, src io.Reader) (written int64, err error) {
-	written, err = copyb.CopyBuffer(dst, src, nil)
-	return
+
+// bufCopy 无client结构方式
+func bufferCopy(dst io.Writer, src io.Reader) (written int64, err error) {
+	var bufWrapper *bytebufferpool.ByteBuffer // 声明 ByteBuffer 包装器
+	var buf []byte
+
+	bufWrapper = bytebufferpool.Get()    // 从池中获取 ByteBuffer
+	defer bytebufferpool.Put(bufWrapper) // 函数结束时将 ByteBuffer 放回池中
+	buf = bufWrapper.B                   // 使用底层的字节切片
+	if cap(buf) < defaultBufferSize {    // 确保容量足够
+		buf = make([]byte, defaultBufferSize) // 如果池中的缓冲区太小，则回退到 make 创建
+	} else {
+		buf = buf[:defaultBufferSize] // 如果池中的缓冲区更大，则限制为配置的 bufferSize
+	}
+
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[0:nr])
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = errInvalidWrite
+				}
+			}
+			written += int64(nw)
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = ErrShortWrite
+				break
+			}
+		}
+		if er != nil {
+			if er != EOF {
+				err = er
+			}
+			break
+		}
+	}
+	return written, err
 }
 
 func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
