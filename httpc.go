@@ -658,14 +658,17 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 // ResponseWriter 包装 http.ResponseWriter 和错误信息
 type ResponseWriter struct {
 	http.ResponseWriter
-	response *http.Response
-	err      error
+	response    *http.Response
+	err         error
+	wroteHeader bool
+	buffer      *bytes.Buffer
 }
 
 // newResponseWriter 创建 ResponseWriter 实例
 func newResponseWriter() *ResponseWriter {
 	return &ResponseWriter{
 		ResponseWriter: &noopResponseWriter{}, // 使用 noopResponseWriter 作为默认值
+		buffer:         bytes.NewBuffer(nil),  // 初始化 buffer
 	}
 }
 
@@ -679,6 +682,12 @@ func (rw *ResponseWriter) Header() http.Header {
 
 // WriteHeader 实现 http.ResponseWriter 接口的 WriteHeader 方法
 func (rw *ResponseWriter) WriteHeader(statusCode int) {
+	if rw.wroteHeader {
+		return // 防止多次调用 WriteHeader
+	}
+
+	rw.wroteHeader = true // 标记 header 已写入
+
 	if rw.response == nil {
 		rw.response = &http.Response{
 			Header:     make(http.Header),
@@ -691,19 +700,42 @@ func (rw *ResponseWriter) WriteHeader(statusCode int) {
 
 // Write 实现 http.ResponseWriter 接口的 Write 方法
 func (rw *ResponseWriter) Write(p []byte) (int, error) {
+	// 如果 response 为 nil，则初始化 response
 	if rw.response == nil {
 		rw.response = &http.Response{
 			Header: make(http.Header),
-			Body:   io.NopCloser(bytes.NewReader(p)), // 使用 bytes.NewReader 和 NopCloser
 		}
-	} else if rw.response.Body == nil {
-		rw.response.Body = io.NopCloser(bytes.NewReader(p))
-	} else {
-		currentBody, _ := io.ReadAll(rw.response.Body)
-		newBody := append(currentBody, p...)
-		rw.response.Body = io.NopCloser(bytes.NewReader(newBody))
 	}
-	return len(p), nil
+
+	// 如果没有调用 WriteHeader，则默认写入 200 OK
+	if !rw.wroteHeader {
+		rw.WriteHeader(http.StatusOK)
+	}
+
+	// 将数据写入 buffer
+	n, err := rw.buffer.Write(p)
+	return n, err
+}
+
+// getResponse 获取 http.Response
+func (rw *ResponseWriter) getResponse() *http.Response {
+	if rw.response != nil && rw.buffer.Len() > 0 {
+		// 在获取 Response 时，将 buffer 中的数据设置为 Body
+		rw.response.Body = io.NopCloser(bytes.NewReader(rw.buffer.Bytes()))
+	}
+	return rw.response
+}
+
+// 实现 http.Flusher 接口
+// Flusher interface implementation (optional)
+type flusher interface {
+	Flush()
+}
+
+func (rw *ResponseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(flusher); ok {
+		f.Flush()
+	}
 }
 
 // noopResponseWriter 实现 http.ResponseWriter 接口，但不执行任何操作
@@ -722,11 +754,6 @@ func (w *noopResponseWriter) WriteHeader(statusCode int) {}
 
 func (w *noopResponseWriter) Write(p []byte) (int, error) {
 	return len(p), nil
-}
-
-// getResponse 获取 http.Response
-func (rw *ResponseWriter) getResponse() *http.Response {
-	return rw.response
 }
 
 // getError 获取错误信息
