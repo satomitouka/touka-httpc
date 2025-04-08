@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/WJQSERVER-STUDIO/go-utils/copyb"
-	"github.com/valyala/bytebufferpool"
 )
 
 // 错误定义
@@ -267,30 +266,37 @@ func WithMiddleware(middleware ...MiddlewareFunc) Option {
 	}
 }
 
-// WithH2C ... (功能调整)
-func WithH2C() Option {
+// WithProtocols 配置客户端支持的 HTTP 协议版本
+func WithProtocols(config ProtocolsConfig) Option {
 	return func(c *Client) {
-		if !isProtocolGlobalySet() { // 只有当全局协议未设置时，Option 才生效
-			enableH2C = true // 设置全局变量启用 H2C
+		// 直接修改当前 Client 实例的 transport 的 Protocols 字段
+		if c.transport == nil {
+			// 如果 transport 还未初始化 (理论上 New 函数会先初始化)，
+			// 可以在 Client 结构体中暂存配置，待 transport 初始化后再应用。
+			// 但更好的方式是确保 transport 在应用此 Option 前已初始化。
+			// 这里假设 transport 已存在。
+			return
+		}
+		if c.transport.Protocols == nil {
+			c.transport.Protocols = new(http.Protocols) // Ensure Protocols field is initialized
+		}
+
+		// 优先应用 ForceH2C (因为它排斥其他协议)
+		if config.ForceH2C {
+			c.transport.Protocols.SetHTTP1(false)
+			c.transport.Protocols.SetHTTP2(false)
+			c.transport.Protocols.SetUnencryptedHTTP2(true)
+			// 如果 ForceH2C，也应该设置 Transport 的 ForceAttemptHTTP2 为 false
+			// 因为 H2C 是非加密的，不需要强制尝试加密的 HTTP/2
+			c.transport.ForceAttemptHTTP2 = false
+		} else {
+			c.transport.Protocols.SetHTTP1(config.Http1)
+			c.transport.Protocols.SetHTTP2(config.Http2)
+			c.transport.Protocols.SetUnencryptedHTTP2(config.Http2_Cleartext)
+			// 根据是否启用 HTTP/2 来决定是否尝试
+			c.transport.ForceAttemptHTTP2 = config.Http2 || config.Http2_Cleartext
 		}
 	}
-}
-
-// WithForceH2C ... (功能调整)
-func WithForceH2C() Option {
-	return func(c *Client) {
-		if !isProtocolGlobalySet() { // 只有当全局协议未设置时，Option 才生效
-			forceH2C = true // 设置全局变量启用 ForceH2C
-		}
-	}
-}
-
-// isProtocolGlobalySet 检查是否通过 SetProtolcols 全局设置了协议
-func isProtocolGlobalySet() bool {
-	if enableH1 || enableH2 || enableH2C || forceH2C {
-		return true
-	}
-	return false
 }
 
 // ProtocolsConfig 协议版本配置结构体
@@ -353,17 +359,6 @@ func New(opts ...Option) *Client {
 		maxBufferPool: defaultMaxBufferPool,
 		timeout:       0, // 默认不设置全局超时
 		middlewares:   []MiddlewareFunc{},
-	}
-
-	if isProtocolGlobalySet() {
-		proTolcols.SetHTTP1(enableH1)
-		proTolcols.SetHTTP2(enableH2)
-		proTolcols.SetUnencryptedHTTP2(enableH2C)
-		if forceH2C {
-			proTolcols.SetHTTP1(false)
-			proTolcols.SetHTTP2(false)
-			proTolcols.SetUnencryptedHTTP2(true)
-		}
 	}
 
 	// 默认 Transport 配置
@@ -542,7 +537,7 @@ func (rb *RequestBuilder) SetJSONBody(body interface{}) (*RequestBuilder, error)
 	if err := json.NewEncoder(buf).Encode(body); err != nil {
 		return nil, fmt.Errorf("encode json body error: %w", err)
 	}
-	rb.body = buf
+	rb.body = bytes.NewReader(buf.Bytes())
 	rb.header.Set("Content-Type", "application/json")
 	return rb, nil
 }
@@ -555,7 +550,7 @@ func (rb *RequestBuilder) SetXMLBody(body interface{}) (*RequestBuilder, error) 
 	if err := xml.NewEncoder(buf).Encode(body); err != nil {
 		return nil, fmt.Errorf("encode xml body error: %w", err)
 	}
-	rb.body = buf
+	rb.body = bytes.NewReader(buf.Bytes())
 	rb.header.Set("Content-Type", "application/xml")
 	return rb, nil
 }
@@ -569,7 +564,7 @@ func (rb *RequestBuilder) SetGOBBody(body interface{}) (*RequestBuilder, error) 
 	if err := gob.NewEncoder(buf).Encode(body); err != nil {
 		return nil, fmt.Errorf("encode gob body error: %w", err)
 	}
-	rb.body = buf
+	rb.body = bytes.NewReader(buf.Bytes())
 	rb.header.Set("Content-Type", "application/octet-stream") // 设置合适的 Content-Type
 	return rb, nil
 }
@@ -658,13 +653,6 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 		// 复制 Body 失败，记录日志或处理错误
 		fmt.Printf("Error copying response body: %v\n", err)
 	}
-	/*
-		// 复制 Body
-		if _, err := bufferCopy(w, resp.Body); err != nil {
-			// 复制 Body 失败，记录日志或处理错误
-			fmt.Printf("Error copying response body: %v\n", err)
-		}
-	*/
 }
 
 // ResponseWriter 包装 http.ResponseWriter 和错误信息
@@ -711,7 +699,6 @@ func (rw *ResponseWriter) Write(p []byte) (int, error) {
 	} else if rw.response.Body == nil {
 		rw.response.Body = io.NopCloser(bytes.NewReader(p))
 	} else {
-		// 如果 Body 已经存在，则追加内容 (需要更高效的实现，这里仅为示例)
 		currentBody, _ := io.ReadAll(rw.response.Body)
 		newBody := append(currentBody, p...)
 		rw.response.Body = io.NopCloser(bytes.NewReader(newBody))
@@ -852,97 +839,6 @@ func formatHeaders(headers http.Header) string {
 	return builder.String()
 }
 
-func (c *Client) bufferCopy(dst io.Writer, src io.Reader) (written int64, err error) {
-	var bufWrapper *bytebufferpool.ByteBuffer // 声明 ByteBuffer 包装器
-	var buf []byte
-
-	if c.bufferSize <= 0 {
-		c.bufferSize = 32 * 1024 // 默认缓冲区大小，如果未配置
-	}
-
-	bufWrapper = bytebufferpool.Get()    // 从池中获取 ByteBuffer
-	defer bytebufferpool.Put(bufWrapper) // 函数结束时将 ByteBuffer 放回池中
-	buf = bufWrapper.B                   // 使用底层的字节切片
-	if cap(buf) < c.bufferSize {         // 确保容量足够
-		buf = make([]byte, c.bufferSize) // 如果池中的缓冲区太小，则回退到 make 创建
-	} else {
-		buf = buf[:c.bufferSize] // 如果池中的缓冲区更大，则限制为配置的 bufferSize
-	}
-
-	for {
-		nr, er := src.Read(buf)
-		if nr > 0 {
-			nw, ew := dst.Write(buf[0:nr])
-			if nw < 0 || nr < nw {
-				nw = 0
-				if ew == nil {
-					ew = errInvalidWrite
-				}
-			}
-			written += int64(nw)
-			if ew != nil {
-				err = ew
-				break
-			}
-			if nr != nw {
-				err = ErrShortWrite
-				break
-			}
-		}
-		if er != nil {
-			if er != EOF {
-				err = er
-			}
-			break
-		}
-	}
-	return written, err
-}
-
-// bufCopy 无client结构方式
-func bufferCopy(dst io.Writer, src io.Reader) (written int64, err error) {
-	var bufWrapper *bytebufferpool.ByteBuffer // 声明 ByteBuffer 包装器
-	var buf []byte
-
-	bufWrapper = bytebufferpool.Get()    // 从池中获取 ByteBuffer
-	defer bytebufferpool.Put(bufWrapper) // 函数结束时将 ByteBuffer 放回池中
-	buf = bufWrapper.B                   // 使用底层的字节切片
-	if cap(buf) < defaultBufferSize {    // 确保容量足够
-		buf = make([]byte, defaultBufferSize) // 如果池中的缓冲区太小，则回退到 make 创建
-	} else {
-		buf = buf[:defaultBufferSize] // 如果池中的缓冲区更大，则限制为配置的 bufferSize
-	}
-
-	for {
-		nr, er := src.Read(buf)
-		if nr > 0 {
-			nw, ew := dst.Write(buf[0:nr])
-			if nw < 0 || nr < nw {
-				nw = 0
-				if ew == nil {
-					ew = errInvalidWrite
-				}
-			}
-			written += int64(nw)
-			if ew != nil {
-				err = ew
-				break
-			}
-			if nr != nw {
-				err = ErrShortWrite
-				break
-			}
-		}
-		if er != nil {
-			if er != EOF {
-				err = er
-			}
-			break
-		}
-	}
-	return written, err
-}
-
 func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 	var (
 		resp *http.Response
@@ -1058,8 +954,16 @@ func (rb *RequestBuilder) DecodeJSON(v interface{}) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	return rb.client.decodeJSONResponse(resp, v)
+	defer func() {
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}()
+	err = rb.client.decodeJSONResponse(resp, v)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // DecodeXML 解析 XML 响应
@@ -1108,103 +1012,145 @@ func (c *Client) decodeJSONResponse(resp *http.Response, v interface{}) error {
 		return c.errorResponse(resp)
 	}
 
-	buf := c.bufferPool.Get()
-	defer c.bufferPool.Put(buf)
-
-	_, err := c.bufferCopy(buf, resp.Body)
-	if err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		return fmt.Errorf("%w: %v", ErrDecodeResponse, err)
-	}
-
-	if err := json.Unmarshal(buf.Bytes(), v); err != nil {
-		return fmt.Errorf("%w: %v, raw body: %s", ErrDecodeResponse, err, buf.String()) // 包含原始 body
 	}
 	return nil
 }
 
-// decodeXMLResponse 内部 XML 响应解码
 func (c *Client) decodeXMLResponse(resp *http.Response, v interface{}) error {
 	if resp.StatusCode >= 400 {
 		return c.errorResponse(resp)
 	}
-
-	buf := c.bufferPool.Get()
-	defer c.bufferPool.Put(buf)
-
-	_, err := c.bufferCopy(buf, resp.Body)
-	if err != nil {
+	if err := xml.NewDecoder(resp.Body).Decode(v); err != nil {
 		return fmt.Errorf("%w: %v", ErrDecodeResponse, err)
-	}
-
-	if err := xml.Unmarshal(buf.Bytes(), v); err != nil {
-		return fmt.Errorf("%w: %v, raw body: %s", ErrDecodeResponse, err, buf.String()) // 包含原始 body
 	}
 	return nil
 }
 
-// decodeGOBResponse 内部 GOB 响应解码
 func (c *Client) decodeGOBResponse(resp *http.Response, v interface{}) error {
 	if resp.StatusCode >= 400 {
 		return c.errorResponse(resp)
 	}
+	if err := gob.NewDecoder(resp.Body).Decode(v); err != nil {
+		if errors.Is(err, io.EOF) && v != nil {
 
-	// 使用 gob 解码
-	buf := c.bufferPool.Get()
-	defer c.bufferPool.Put(buf)
-
-	_, err := c.bufferCopy(buf, resp.Body)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrDecodeResponse, err)
-	}
-	if err := gob.NewDecoder(buf).Decode(v); err != nil {
-		if errors.Is(err, io.EOF) {
 			return fmt.Errorf("%w: unexpected end of data: %v", ErrDecodeResponse, err)
 		}
-		return fmt.Errorf("%w: %v, raw body: %s", ErrDecodeResponse, err, buf.String()) // 包含原始 body
+		return fmt.Errorf("%w: %v", ErrDecodeResponse, err)
 	}
 	return nil
 }
 
-// decodeTextResponse 内部 Text 响应解码
 func (c *Client) decodeTextResponse(resp *http.Response) (string, error) {
 	if resp.StatusCode >= 400 {
 		return "", c.errorResponse(resp)
 	}
-	buf := c.bufferPool.Get()
-	defer c.bufferPool.Put(buf)
 
-	_, err := c.bufferCopy(buf, resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrDecodeResponse, err)
 	}
-	return buf.String(), nil
+	return string(bodyBytes), nil
 }
 
-// decodeBytesResponse 内部 Bytes 响应解码
 func (c *Client) decodeBytesResponse(resp *http.Response) ([]byte, error) {
 	if resp.StatusCode >= 400 {
 		return nil, c.errorResponse(resp)
 	}
-	buf := c.bufferPool.Get()
-	defer c.bufferPool.Put(buf)
-
-	_, err := c.bufferCopy(buf, resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrDecodeResponse, err)
 	}
-	return buf.Bytes(), nil
+	return bodyBytes, nil
 }
 
-// errorResponse 处理错误响应，返回包含状态码和 Body 的错误
+// HTTPError 表示一个 HTTP 错误响应 (状态码 >= 400).
+// 它实现了 error 接口.
+type HTTPError struct {
+	StatusCode int         // HTTP 状态码
+	Status     string      // HTTP 状态文本 (e.g., "Not Found")
+	Header     http.Header // 响应头 (副本)
+	Body       []byte      // 响应体的前缀 (用于预览)
+}
+
+func (e *HTTPError) Error() string {
+	bodyPreview := string(e.Body)
+	const maxPreviewLen = 200
+	if len(bodyPreview) > maxPreviewLen {
+		bodyPreview = bodyPreview[:maxPreviewLen] + "..."
+	}
+	bodyPreview = strings.TrimSpace(bodyPreview)
+	return fmt.Sprintf("httpc: unexpected status %d (%s); body preview: %q",
+		e.StatusCode, e.Status, bodyPreview)
+}
+
+// errorResponse 读取响应体的一小部分并返回结构化的 HTTPError.
+// 它还会尝试丢弃剩余的响应体以帮助连接复用.
 func (c *Client) errorResponse(resp *http.Response) error {
+
+	// 定义为错误预览读取的最大字节数
+	const maxErrorBodyRead = 1 * 1024 // 读取最多 1KB
+
 	buf := c.bufferPool.Get()
 	defer c.bufferPool.Put(buf)
 
-	_, err := c.bufferCopy(buf, resp.Body)
-	if err != nil {
-		return fmt.Errorf("HTTP %d, failed to read error body: %w", resp.StatusCode, err)
+	limitedReader := io.LimitReader(resp.Body, maxErrorBodyRead)
+	readErr := func() error { // 使用匿名函数捕获读取错误
+		_, err := io.Copy(buf, limitedReader)
+		return err
+	}() // 立即执行
+
+	// *** 关键: 丢弃剩余的响应体 ***
+	const maxDiscardSize = 64 * 1024
+	discardErr := func() error { // 使用匿名函数捕获丢弃错误
+		_, err := io.CopyN(io.Discard, resp.Body, maxDiscardSize)
+		// 如果错误是 EOF，说明我们已经读完了或者超出了 maxDiscardSize，这不是一个需要报告的错误
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}() // 立即执行
+
+	var reqCtx context.Context = context.Background()
+	if resp.Request != nil {
+		reqCtx = resp.Request.Context()
 	}
-	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, buf.String())
+
+	// 记录丢弃时发生的错误 (检查 c.dumpLog 是否为 nil)
+	if discardErr != nil && c.dumpLog != nil {
+		logMsg := fmt.Sprintf("httpc: warning - error discarding response body for %v", discardErr)
+		c.dumpLog(reqCtx, logMsg) // 使用获取到的或默认的 Context
+	}
+
+	// 复制 Body 预览
+	bodyBytes := make([]byte, buf.Len())
+	copy(bodyBytes, buf.Bytes()) // 从 buf 复制，buf 会被回收
+
+	// 复制 Header
+	headerCopy := make(http.Header)
+	if resp.Header != nil {
+		for k, v := range resp.Header {
+			headerCopy[k] = append([]string(nil), v...)
+		}
+	}
+
+	// 创建结构化错误
+	httpErr := &HTTPError{
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Header:     headerCopy,
+		Body:       bodyBytes,
+	}
+
+	// 记录读取预览时发生的错误 (检查 c.dumpLog 是否为 nil)
+	// 仅在非 EOF 错误时记录
+	if readErr != nil && !errors.Is(readErr, io.EOF) && c.dumpLog != nil {
+		logMsg := fmt.Sprintf("httpc: warning - error reading error response body preview for %v", readErr)
+		c.dumpLog(reqCtx, logMsg) // 使用获取到的或默认的 Context
+	}
+
+	return httpErr
 }
 
 // --- 标准库兼容方法 (使用 RequestBuilder 重构) ---
