@@ -275,6 +275,9 @@ func WithProtocols(config ProtocolsConfig) Option {
 			// 可以在 Client 结构体中暂存配置，待 transport 初始化后再应用。
 			// 但更好的方式是确保 transport 在应用此 Option 前已初始化。
 			// 这里假设 transport 已存在。
+			c.transport = &http.Transport{}
+			c.client.Transport = c.transport
+
 			return
 		}
 		if c.transport.Protocols == nil {
