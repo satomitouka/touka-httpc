@@ -1,11 +1,8 @@
-好的，我已经将 `README.md` 中的占位符替换为实际的项目地址 `https://github.com/satomitouka/touka-httpc`，并更新了相关的链接。
 
-```markdown
-# httpc - 功能丰富的 Go HTTP 客户端库
+# touka-httpc - 功能丰富的 Go HTTP 客户端库
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/satomitouka/touka-httpc)](https://goreportcard.com/report/github.com/satomitouka/touka-httpc)
 [![GoDoc](https://godoc.org/github.com/satomitouka/touka-httpc?status.svg)](https://godoc.org/github.com/satomitouka/touka-httpc)
-<!-- 可选：添加其他徽章，如版本、构建状态、许可证等 -->
 
 `httpc` 是一个基于 Go 标准库 `net/http` 构建的、灵活且功能丰富的 HTTP 客户端库。它旨在提供更便捷的 API、增强的配置选项以及常用的附加功能，如自动重试、请求构建、响应解码、中间件支持和详细日志记录。
 
