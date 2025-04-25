@@ -430,13 +430,14 @@ func (c *Client) SetTimeout(timeout time.Duration) {
 
 // RequestBuilder 用于构建请求的结构体
 type RequestBuilder struct {
-	client  *Client
-	method  string
-	url     string
-	header  http.Header
-	query   url.Values
-	body    io.Reader
-	context context.Context
+	client           *Client
+	method           string
+	url              string
+	header           http.Header
+	query            url.Values
+	body             io.Reader
+	context          context.Context
+	noDefaultHeaders bool
 }
 
 // NewRequestBuilder 创建 RequestBuilder 实例
@@ -483,6 +484,12 @@ func (c *Client) OPTIONS(urlStr string) *RequestBuilder {
 // WithContext 设置 Context
 func (rb *RequestBuilder) WithContext(ctx context.Context) *RequestBuilder {
 	rb.context = ctx
+	return rb
+}
+
+// NoDefaultHeaders 设置请求不添加默认 Header
+func (rb *RequestBuilder) NoDefaultHeaders() *RequestBuilder {
+	rb.noDefaultHeaders = true
 	return rb
 }
 
@@ -596,8 +603,11 @@ func (rb *RequestBuilder) Build() (*http.Request, error) {
 
 	// 合并 Header，RequestBuilder 中的 Header 优先级更高
 	req.Header = rb.header
-	req.Header.Set("User-Agent", rb.client.userAgent) // 确保 User-Agent 被设置
 
+	// 若没有设置 NoDefaultHeaders，则添加默认 UA Header
+	if !rb.noDefaultHeaders {
+		req.Header.Set("User-Agent", rb.client.userAgent) // 确保 User-Agent 被设置
+	}
 	return req, nil
 }
 
